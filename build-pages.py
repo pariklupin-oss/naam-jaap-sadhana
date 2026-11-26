@@ -5,28 +5,24 @@ from pathlib import Path
 
 page = Path("index.html").read_text(encoding="utf-8")
 old_policy = "script-src 'unsafe-inline'; connect-src 'none'"
-new_policy = "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src blob:; connect-src 'self' blob:"
+new_policy = "script-src 'self' 'unsafe-inline'; worker-src 'self'; connect-src 'self'"
 if page.count(old_policy) != 1 or page.count("</html>") != 1:
     raise SystemExit("Unexpected HTML layout or policy")
-revision = hashlib.sha256(Path("speech-browser.js").read_bytes()).hexdigest()[:12]
+client = Path("dist/speech-browser.js")
+client.write_text(client.read_text(encoding="utf-8").replace("./speech/vosk.js?v=2", "./speech/vosk.js?v=3"), encoding="utf-8")
+revision = hashlib.sha256(client.read_bytes()).hexdigest()[:12]
 page = page.replace(old_policy, new_policy).replace(
     "</html>", f'<script src="./speech-browser.js?v={revision}"></script>\n</html>')
 Path("dist/index.html").write_text(page, encoding="utf-8")
 
-# The pinned WASM package's worker uses dynamic code generation only to name
-# a function wrapper. Keep the wrapper and its name without requiring unsafe-eval.
+# Give the pinned WASM worker its own same-origin URL so its generated bindings
+# can initialize without allowing dynamic code evaluation in the app page.
 library = Path("dist/speech/vosk.js")
 wrapper = library.read_text(encoding="utf-8")
-worker_match = re.search(r"createBase64WorkerFactory\('([A-Za-z0-9+/=]+)'", wrapper)
+worker_match = re.search(r"var WorkerFactory = createBase64WorkerFactory\('([A-Za-z0-9+/=]+)', null, false\);", wrapper)
 if not worker_match:
     raise SystemExit("Missing embedded speech worker")
-worker = base64.b64decode(worker_match[1]).decode("utf-8")
-start = worker.index("function createNamedFunction(name,body){")
-end = worker.index("var emval_free_list", start)
-if worker[start:end].count("new Function") != 1:
-    raise SystemExit("Unexpected speech worker wrapper")
-worker = (worker[:start] + 'function createNamedFunction(name,body){const fn=function(){return body.apply(this,arguments)};'
-          'Object.defineProperty(fn,"name",{value:makeLegalFunctionName(name),configurable:true});return fn}'
-          + worker[end:])
-encoded = base64.b64encode(worker.encode("utf-8")).decode("ascii")
-library.write_text(wrapper[:worker_match.start(1)] + encoded + wrapper[worker_match.end(1):], encoding="utf-8")
+worker = base64.b64decode(worker_match[1])
+Path("dist/speech/vosk-worker.js").write_bytes(worker)
+worker_factory = 'var WorkerFactory = function () { return new Worker(new URL("./speech/vosk-worker.js", document.baseURI)); };'
+library.write_text(wrapper[:worker_match.start()] + worker_factory + wrapper[worker_match.end():], encoding="utf-8")
