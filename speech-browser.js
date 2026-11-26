@@ -9,8 +9,24 @@ function loadModel() {
   if (modelPromise) return modelPromise;
   modelPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "./speech/vosk.js";
-    script.onload = () => window.Vosk.createModel(new URL("./speech/hindi.tar.gz", location.href).href, -1).then(resolve, reject);
+    script.src = "./speech/vosk.js?v=2";
+    script.onload = () => {
+      const model = new window.Vosk.Model(new URL("./speech/hindi.tar.gz", location.href).href, -1);
+      let timeout;
+      const fail = error => {
+        clearTimeout(timeout);
+        model.terminate();
+        reject(new Error(error || "Hindi model failed"));
+      };
+      model.on("load", event => {
+        clearTimeout(timeout);
+        if (event.result) resolve(model);
+        else fail();
+      });
+      model.on("error", event => fail(event.error));
+      model.worker.addEventListener("error", event => fail(event.message), {once:true});
+      timeout = setTimeout(() => fail("Hindi model timed out"), 90000);
+    };
     script.onerror = reject;
     document.head.append(script);
   }).catch(error => { modelPromise = null; throw error; });
@@ -116,6 +132,7 @@ button.onclick = async () => {
     release(current);
     current.recognizer?.remove();
     unlock();
+    console.warn("Naam Jaap Hindi startup:", error?.message);
     voiceStatus(error?.name === "NotAllowedError" ? "ब्राउज़र में माइक की अनुमति दें।" : "हिंदी मॉडल या माइक शुरू नहीं हो सका। फिर कोशिश करें।");
   }
 };
