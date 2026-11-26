@@ -3,7 +3,39 @@
 const button = byId("speech");
 const menu = byId("mantra");
 const customButton = byId("saveMantra");
+const meterButton = byId("mic");
+const meterToggle = meterButton.onclick;
+const inputRate = 16000;
 let modelPromise, session, busy = false;
+let meterVisible = true;
+meterButton.onclick = () => {
+  if (!session) return meterToggle();
+  meterVisible = !meterVisible;
+  byId("level").hidden = !meterVisible;
+  meterButton.textContent = meterVisible ? "माइक मीटर बंद करें" : "माइक मीटर शुरू करें";
+};
+
+function resampler(rate) {
+  if (rate === inputRate) return samples => samples;
+  let sum = 0, width = 0;
+  const ratio = rate / inputRate;
+  return samples => {
+    const output = new Float32Array(Math.ceil(samples.length / ratio) + 1);
+    let written = 0;
+    for (const sample of samples) {
+      let remaining = 1;
+      while (remaining > 1e-8) {
+        const part = Math.min(remaining, ratio - width);
+        sum += sample * part; width += part; remaining -= part;
+        if (width >= ratio - 1e-8) {
+          output[written++] = sum / ratio;
+          sum = 0; width = 0;
+        }
+      }
+    }
+    return output.subarray(0, written);
+  };
+}
 
 function loadModel() {
   if (modelPromise) return modelPromise;
@@ -67,6 +99,9 @@ function unlock() {
   button.textContent = "ऑफलाइन वॉइस गिनती";
   menu.disabled = false;
   customButton.disabled = false;
+  byId("level").hidden = true;
+  byId("level").value = 0;
+  meterButton.textContent = "माइक मीटर शुरू करें";
 }
 
 function stop() {
@@ -97,18 +132,30 @@ button.onclick = async () => {
   voiceStatus("पहली बार हिंदी मॉडल तैयार हो रहा है। लगभग 43 MB डाउनलोड हो सकते हैं।");
   const current = {};
   try {
-    current.context = new AudioContext();
+    if (micStream) stopMeter();
+    try { current.context = new AudioContext({sampleRate:inputRate}); }
+    catch { current.context = new AudioContext(); }
     await current.context.resume();
     const model = await loadModel();
     voiceStatus("हिंदी मॉडल तैयार है। ब्राउज़र पूछे तो माइक की अनुमति दें।");
-    current.stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
-    current.recognizer = new model.KaldiRecognizer(current.context.sampleRate, grammar(selected, phrase));
+    current.stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+    current.recognizer = new model.KaldiRecognizer(inputRate, grammar(selected, phrase));
     current.source = current.context.createMediaStreamSource(current.stream);
     current.processor = current.context.createScriptProcessor(2048, 1, 1);
+    const convert = resampler(current.context.sampleRate);
+    let lastShown = "";
+    const showHeard = text => {
+      const cleanText = (text || "").replace(/\[unk\]/g,"…").trim();
+      if (session === current && cleanText && cleanText !== lastShown) {
+        lastShown = cleanText;
+        voiceStatus("ऐप ने सुना  " + cleanText.slice(-150));
+      }
+    };
     let tail = [];
     current.recognizer.on("result", event => {
       if (state.mantra !== selected) return;
       let count = 0;
+      showHeard(event.result?.text);
       const tokens = voiceWords((event.result?.text || "").replace(/\[unk\]/g, " अस्पष्ट "));
       for (const token of tokens) {
         tail.push(token);
@@ -119,15 +166,35 @@ button.onclick = async () => {
       }
       if (count) change(count);
     });
+    current.recognizer.on("partialresult", event => showHeard(event.result?.partial));
+    current.recognizer.on("error", event => {
+      if (session !== current) return;
+      console.warn("Naam Jaap Hindi recognition:", event.error);
+      session = null;
+      release(current);
+      current.recognizer.remove();
+      unlock();
+      voiceStatus("माइक खुला, लेकिन हिंदी पहचान शुरू नहीं हुई। पेज रीफ़्रेश करके फिर कोशिश करें।");
+    });
     current.processor.onaudioprocess = event => {
-      if (session === current) current.recognizer.acceptWaveform(event.inputBuffer);
+      if (session !== current) return;
+      const samples = event.inputBuffer.getChannelData(0);
+      if (meterVisible) {
+        const rms = Math.sqrt(samples.reduce((sum,value)=>sum+value*value,0)/samples.length);
+        byId("level").value = Math.max(0,Math.min(100,(20*Math.log10(Math.max(rms,1e-7))+65)*100/65));
+      }
+      const converted = convert(samples);
+      if (converted.length) current.recognizer.acceptWaveformFloat(converted, inputRate);
     };
     current.source.connect(current.processor);
     current.processor.connect(current.context.destination);
     session = current;
+    meterVisible = true;
+    byId("level").hidden = false;
+    meterButton.textContent = "माइक मीटर बंद करें";
     button.disabled = false;
     button.textContent = "वॉइस गिनती रोकें";
-    voiceStatus("हिंदी पहचान इसी फ़ोन पर चल रही है।");
+    voiceStatus("सुन रहे हैं। पूरा मंत्र बोलें, फिर छोटा विराम दें।");
   } catch (error) {
     release(current);
     current.recognizer?.remove();
