@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import re
 from pathlib import Path
 
@@ -7,7 +8,9 @@ old_policy = "script-src 'unsafe-inline'; connect-src 'none'"
 new_policy = "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src blob:; connect-src 'self' blob:"
 if page.count(old_policy) != 1 or page.count("</html>") != 1:
     raise SystemExit("Unexpected HTML layout or policy")
-page = page.replace(old_policy, new_policy).replace("</html>", '<script src="./speech-browser.js"></script>\n</html>')
+revision = hashlib.sha256(Path("speech-browser.js").read_bytes()).hexdigest()[:12]
+page = page.replace(old_policy, new_policy).replace(
+    "</html>", f'<script src="./speech-browser.js?v={revision}"></script>\n</html>')
 Path("dist/index.html").write_text(page, encoding="utf-8")
 
 # The pinned WASM package's worker uses dynamic code generation only to name
