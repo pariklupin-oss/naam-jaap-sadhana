@@ -84,6 +84,7 @@ button.onclick = async () => {
     current.context = new AudioContext();
     await current.context.resume();
     const model = await loadModel();
+    voiceStatus("हिंदी मॉडल तैयार है। ब्राउज़र पूछे तो माइक की अनुमति दें।");
     current.stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
     current.recognizer = new model.KaldiRecognizer(current.context.sampleRate, grammar(selected, phrase));
     current.source = current.context.createMediaStreamSource(current.stream);
